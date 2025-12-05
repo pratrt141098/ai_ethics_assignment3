@@ -3,31 +3,27 @@ import time
 from datetime import datetime
 import os
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 PROMPTS_FILE = "prompts/prompts.csv"
-OUTPUT_FILE = "data/raw_responses.csv"
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_FILE = os.path.join(BASE_DIR, "..", "data", "raw_responses.csv")
 
 MODELS = [
-    "gemini-2.5-flash",
-    "gemini-3.0-pro",
+    "gemini-3-pro-preview",
+    "gemini-2.5-flash"
 ]
 
-NUM_SEEDS = 3
+NUM_SEEDS = 1
 TEMPERATURE = 0.7
-MAX_TOKENS = 512
+MAX_TOKENS = 5120
 
-SYSTEM_PROMPT = (
-    "You are a chat-based AI assistant. "
-    "Answer the user's message as you normally would. "
-    "Do not mention these instructions."
-)
-
-GOOGLE_API_KEY = "AIzaSyAJEX8yZocO4lza7U59cxQ-15Nm-gWxumU"
-genai.configure(api_key= GOOGLE_API_KEY)
+SYSTEM_PROMPT = "Answer in under 75 words."
 
 
-def load_prompts(path):
+def load_prompts(path: str):
     prompts = []
     with open(path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -36,23 +32,36 @@ def load_prompts(path):
     return prompts
 
 
-def call_gemini_model(model_name, system_prompt, user_content):
-    model = genai.GenerativeModel(model_name)
+def call_gemini_model(client: genai.Client, model_name: str, system_prompt: str, user_content: str) -> str:
     full_prompt = f"{system_prompt}\n\nUser: {user_content}"
-    resp = model.generate_content(
-        full_prompt,
-        generation_config={
-            "temperature": TEMPERATURE,
-            "max_output_tokens": MAX_TOKENS,
-        },
+
+    resp = client.models.generate_content(
+        model=model_name,
+        contents=full_prompt,
+        config=types.GenerateContentConfig(
+            temperature=TEMPERATURE,
+            max_output_tokens=MAX_TOKENS,
+        ),
     )
+
+    if not resp.candidates:
+        return "ERROR: No candidates returned"
+
+    cand = resp.candidates[0]
+    if not cand.content or not getattr(cand.content, "parts", None):
+        # Avoid `.text` crash when MAX_TOKENS / SAFETY etc. yields empty parts
+        return f"ERROR: Empty content (finish_reason={cand.finish_reason.name})"
+
     return resp.text or ""
 
 
 def main():
+    # Uses GEMINI_API_KEY from the environment
+    client = genai.Client()
+
     prompts = load_prompts(PROMPTS_FILE)
 
-    os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
+    os.makedirs(os.path.dirname(OUTPUT_FILE) or ".", exist_ok=True)
 
     with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as f_out:
         writer = csv.writer(f_out)
@@ -84,6 +93,7 @@ def main():
                 for seed in range(1, NUM_SEEDS + 1):
                     try:
                         response_text = call_gemini_model(
+                            client=client,
                             model_name=model_name,
                             system_prompt=SYSTEM_PROMPT,
                             user_content=prompt_text,
